@@ -1,0 +1,7 @@
+{
+  "name": "Guitar Prompter",
+  "description": "A fullscreen companion app for guitar players who need to see the Tabs and Chords of the songs in their repertoire while performing. Users can import songs manually, from clipboard, or by uploading text/PDF files.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
