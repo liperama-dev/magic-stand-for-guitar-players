@@ -3,7 +3,12 @@ export interface Song {
   title: string;
   content: string;
   createdAt: number;
-  sourceUrl?: string;
+}
+
+export interface Set {
+  id: string;
+  title: string;
+  songIds: string[];
 }
 
 export interface ChordDiagramData {

@@ -7,6 +7,9 @@ import CloseIcon from './icons/CloseIcon';
 import MusicNoteIcon from './icons/MusicNoteIcon';
 import MicrophoneIcon from './icons/MicrophoneIcon';
 import ChordCheatsheet from './ChordCheatsheet';
+import NextIcon from './icons/NextIcon';
+import PrevIcon from './icons/PrevIcon';
+
 
 interface PerformanceViewProps {
   song: Song;
@@ -14,28 +17,50 @@ interface PerformanceViewProps {
   chordBookHook: ReturnType<typeof useChordBook>;
   isCheatsheetVisible: boolean;
   setIsCheatsheetVisible: (visible: boolean) => void;
+  onNext?: () => void;
+  onPrev?: () => void;
+  isNextAvailable?: boolean;
+  isPrevAvailable?: boolean;
 }
 
-const PerformanceView: React.FC<PerformanceViewProps> = ({ song, onExit, chordBookHook, isCheatsheetVisible, setIsCheatsheetVisible }) => {
+const PerformanceView: React.FC<PerformanceViewProps> = ({ 
+    song, onExit, chordBookHook, isCheatsheetVisible, setIsCheatsheetVisible,
+    onNext, onPrev, isNextAvailable, isPrevAvailable
+}) => {
   const [highlightedSectionIndex, setHighlightedSectionIndex] = useState(0);
   const { isListening, detectedNote, toggleListening, error: micError } = usePitchDetector();
   const [fontSize, setFontSize] = useState<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const sectionRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const initialFontSizeRef = useRef<number | null>(null);
+
+  const fontSizeRef = useRef(fontSize);
+  fontSizeRef.current = fontSize;
 
   const songSections = useMemo(() => {
     return song.content.split(/\n\s*\n/).map(section => section.trim()).filter(Boolean);
   }, [song.content]);
 
   useEffect(() => {
+    setHighlightedSectionIndex(0);
+  }, [song.id]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onExit();
       if (event.key === 'ArrowDown') setHighlightedSectionIndex(prev => Math.min(prev + 1, songSections.length - 1));
       if (event.key === 'ArrowUp') setHighlightedSectionIndex(prev => Math.max(prev - 1, 0));
+      if (event.key === 'ArrowRight' && onNext && isNextAvailable) onNext();
+      if (event.key === 'ArrowLeft' && onPrev && isPrevAvailable) onPrev();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onExit, songSections.length]);
+  }, [onExit, songSections.length, onNext, onPrev, isNextAvailable, isPrevAvailable]);
+
+  useEffect(() => {
+    initialFontSizeRef.current = null;
+    setFontSize(null);
+  }, [song.content]);
 
   useLayoutEffect(() => {
     const calculateFontSize = () => {
@@ -44,9 +69,14 @@ const PerformanceView: React.FC<PerformanceViewProps> = ({ song, onExit, chordBo
         return;
       }
 
-      container.style.fontSize = '';
-      const initialFontSize = parseFloat(window.getComputedStyle(container).fontSize);
+      if (!initialFontSizeRef.current) {
+        initialFontSizeRef.current = parseFloat(window.getComputedStyle(container).fontSize);
+      }
+      const initialFontSize = initialFontSizeRef.current;
+      const currentFontSize = fontSizeRef.current || initialFontSize;
 
+      const contentHeight = container.scrollHeight;
+      
       const columnCount = parseInt(window.getComputedStyle(container).columnCount, 10) || 1;
       const columnGap = columnCount > 1 ? parseInt(window.getComputedStyle(container).columnGap, 10) || 0 : 0;
       const columnWidth = (container.clientWidth - (columnGap * (columnCount - 1))) / columnCount;
@@ -63,26 +93,46 @@ const PerformanceView: React.FC<PerformanceViewProps> = ({ song, onExit, chordBo
         }
       });
       
-      const buffer = 2;
-      if (maxScrollWidth > (columnWidth - buffer)) {
-        const scale = (columnWidth - buffer) / maxScrollWidth;
-        const newSize = initialFontSize * scale;
-        setFontSize(Math.max(newSize, 10));
-      } else {
-        setFontSize(null);
+      if (maxScrollWidth === 0 || contentHeight === 0) {
+        return;
       }
+      
+      const widthAtInitial = maxScrollWidth * (initialFontSize / currentFontSize);
+      const heightAtInitial = contentHeight * (initialFontSize / currentFontSize);
+
+      const containerHeight = container.clientHeight;
+      const buffer = 2;
+      const widthScale = (columnWidth - buffer) / widthAtInitial;
+      const heightScale = containerHeight / heightAtInitial;
+
+      const finalScale = Math.min(widthScale, heightScale);
+
+      let newSize = initialFontSize * finalScale;
+      newSize = Math.max(newSize, 10);
+
+      setFontSize(currentVal => {
+        if (currentVal === null || Math.abs(newSize - currentVal) > 0.1) {
+          return newSize;
+        }
+        return currentVal;
+      });
     };
     
     sectionRefs.current = sectionRefs.current.slice(0, songSections.length);
-    calculateFontSize();
     
-    const resizeObserver = new ResizeObserver(calculateFontSize);
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current);
+    const timeoutId = setTimeout(calculateFontSize, 0);
+    const observer = new ResizeObserver(calculateFontSize);
+    const container = containerRef.current;
+    if (container) {
+      observer.observe(container);
     }
 
-    return () => resizeObserver.disconnect();
-  }, [song.content, songSections.length]);
+    return () => {
+      clearTimeout(timeoutId);
+      if (container) observer.unobserve(container);
+      observer.disconnect();
+    };
+  }, [songSections]);
 
   useEffect(() => {
     if (isListening && detectedNote && songSections.length > 0) {
@@ -142,7 +192,7 @@ const PerformanceView: React.FC<PerformanceViewProps> = ({ song, onExit, chordBo
         <h1 className="text-3xl md:text-4xl lg:text-5xl font-bold text-center">{song.title}</h1>
       </div>
       
-      <div className="flex-1 overflow-y-auto px-8 md:px-12 lg:px-16" onDoubleClick={onExit}>
+      <div className="flex-1 overflow-hidden px-8 md:px-12 lg:px-16" onDoubleClick={onExit}>
         <div 
           ref={containerRef}
           style={{ fontSize: fontSize ? `${fontSize}px` : undefined }}
@@ -152,8 +202,6 @@ const PerformanceView: React.FC<PerformanceViewProps> = ({ song, onExit, chordBo
           {songSections.map((section, index) => (
             <div 
               key={index} 
-              // FIX: A ref callback should not return a value. The assignment `sectionRefs.current[index] = el` implicitly returns `el`.
-              // By wrapping the assignment in curly braces, the arrow function body becomes a block and implicitly returns `undefined`.
               ref={el => { sectionRefs.current[index] = el; }}
               className={`break-inside-avoid mb-6 whitespace-pre-wrap p-2 rounded-md transition-colors duration-500 ${index === highlightedSectionIndex ? 'bg-gray-800 ring-2 ring-indigo-500' : ''}`}
             >
@@ -168,6 +216,27 @@ const PerformanceView: React.FC<PerformanceViewProps> = ({ song, onExit, chordBo
             songContent={song.content}
             chordBookHook={chordBookHook}
         />
+      )}
+
+      {onPrev && (
+        <button 
+            onClick={onPrev}
+            disabled={!isPrevAvailable}
+            className="fixed left-4 top-1/2 -translate-y-1/2 p-4 bg-gray-700 rounded-full hover:bg-indigo-500 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+            aria-label="Previous Song"
+        >
+            <PrevIcon />
+        </button>
+      )}
+      {onNext && (
+        <button 
+            onClick={onNext}
+            disabled={!isNextAvailable}
+            className="fixed right-4 top-1/2 -translate-y-1/2 p-4 bg-gray-700 rounded-full hover:bg-indigo-500 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+            aria-label="Next Song"
+        >
+            <NextIcon />
+        </button>
       )}
 
       <div className="fixed top-4 right-4 flex flex-col gap-2 z-50">

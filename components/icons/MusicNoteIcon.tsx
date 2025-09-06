@@ -1,9 +1,9 @@
 import React from 'react';
 
-const MusicNoteIcon: React.FC = () => (
+const MusicNoteIcon: React.FC<{classNameProp?: string}> = ({classNameProp}) => (
   <svg 
     xmlns="http://www.w3.org/2000/svg" 
-    className="h-5 w-5" 
+    className={classNameProp || "h-5 w-5"}
     fill="none" 
     viewBox="0 0 24 24" 
     stroke="currentColor" 

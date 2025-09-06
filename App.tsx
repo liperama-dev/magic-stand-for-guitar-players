@@ -1,31 +1,27 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Song } from './types';
+import React, { useState, useEffect } from 'react';
+import { Song, Set } from './types';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import SongList from './components/SongList';
 import EditorPanel from './components/EditorPanel';
 import PerformanceView from './components/PerformanceView';
-import { searchSongOnPreferredSites, extractSongFromHtml, transposeSong, parseSongFromFile } from './services/geminiService';
+import { transposeSong, parseSongFromFile } from './services/geminiService';
 import { useChordBook } from './hooks/useChordBook';
-import SettingsModal from './components/SettingsModal';
 
 const App: React.FC = () => {
     const [songs, setSongs] = useLocalStorage<Song[]>('guitar-prompter-songs', []);
+    const [sets, setSets] = useLocalStorage<Set[]>('guitar-prompter-sets', []);
     const [activeSongId, setActiveSongId] = useLocalStorage<string | null>('guitar-prompter-active-song-id', null);
+    const [activeSetId, setActiveSetId] = useLocalStorage<string | null>('guitar-prompter-active-set-id', null);
+    
     const [isPerformanceMode, setIsPerformanceMode] = useState(false);
+    const [performanceContext, setPerformanceContext] = useState<{ setId: string; songIndex: number } | null>(null);
+
     const [isLoading, setIsLoading] = useState(false);
     const [loadingMessage, setLoadingMessage] = useState('');
     const [pendingSongTitle, setPendingSongTitle] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const chordBookHook = useChordBook();
     const [isCheatsheetVisible, setIsCheatsheetVisible] = useState(false);
-    const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-    const [preferredSites, setPreferredSites] = useLocalStorage<string[]>('guitar-prompter-preferred-sites', [
-        'cifraclub.com.br',
-        'ultimate-guitar.com',
-        'e-chords.com',
-        'chordie.com',
-    ]);
-
 
     const activeSong = songs.find(song => song.id === activeSongId) || null;
 
@@ -38,10 +34,17 @@ const App: React.FC = () => {
         };
         setSongs(prevSongs => [newSong, ...prevSongs]);
         setActiveSongId(newSong.id);
+        setActiveSetId(null);
     };
     
     const handleDeleteSong = (id: string) => {
         setSongs(songs => songs.filter(song => song.id !== id));
+        // Also remove this song from any sets
+        setSets(prevSets => prevSets.map(set => ({
+            ...set,
+            songIds: set.songIds.filter(songId => songId !== id)
+        })));
+
         if (activeSongId === id) {
             setActiveSongId(null);
         }
@@ -56,38 +59,39 @@ const App: React.FC = () => {
         );
     };
 
-    const handleSearch = async (query: string, site: string) => {
+    const handleUpdateTitle = (id: string, title: string, type: 'song' | 'set') => {
+        if (type === 'song') {
+            setSongs(prev => prev.map(s => s.id === id ? {...s, title} : s));
+        } else {
+            setSets(prev => prev.map(s => s.id === id ? {...s, title} : s));
+        }
+    };
+    
+    const handlePasteAndCreateSong = async () => {
         setIsLoading(true);
-        setPendingSongTitle(query);
-        setLoadingMessage(`Searching for "${query}" on ${site}...`);
+        setPendingSongTitle('Pasting from clipboard...');
+        setLoadingMessage('Reading clipboard...');
         setError(null);
         try {
-            const searchResult = await searchSongOnPreferredSites(query, site);
-            
-            if (searchResult.status === 'NOT_FOUND') {
-                setError(`Could not find "${query}" on ${site}. Please try another website or search term.`);
+            const text = await navigator.clipboard.readText();
+            if (!text.trim()) {
                 setIsLoading(false);
-                setLoadingMessage('');
                 setPendingSongTitle(null);
                 return;
-            }
-
-            setLoadingMessage(`Parsing "${searchResult.pageTitle}"...`);
-
-            const extractedData = await extractSongFromHtml(searchResult.pageTitle, searchResult.htmlContent, searchResult.sourceUrl);
+            };
 
             const newSong: Song = {
                 id: `song-${Date.now()}`,
-                title: extractedData.title || searchResult.pageTitle,
-                content: extractedData.content,
+                title: 'Pasted Song',
+                content: text,
                 createdAt: Date.now(),
-                sourceUrl: searchResult.sourceUrl,
             };
             setSongs(prev => [newSong, ...prev]);
             setActiveSongId(newSong.id);
-        } catch (e) {
-            console.error(e);
-            setError('Failed to find and parse the song. The website may have blocked the request or the response was invalid.');
+            setActiveSetId(null);
+        } catch (err) {
+            console.error('Failed to read clipboard contents: ', err);
+            setError('Failed to paste from clipboard.');
         } finally {
             setIsLoading(false);
             setLoadingMessage('');
@@ -110,6 +114,7 @@ const App: React.FC = () => {
             };
             setSongs(prev => [newSong, ...prev]);
             setActiveSongId(newSong.id);
+            setActiveSetId(null);
         } catch (e) {
             console.error(e);
             setError('Failed to import from file. The file format may not be supported.');
@@ -137,38 +142,134 @@ const App: React.FC = () => {
         }
     };
     
-    const handleSelectSong = (id: string) => {
+    const handleSelectSong = (id: string, contextSetId?: string) => {
         setActiveSongId(id);
+        setActiveSetId(contextSetId || null);
     };
 
     const handleShowWelcome = () => {
         setActiveSongId(null);
+        setActiveSetId(null);
     };
 
-    const handleKeyDown = useCallback((e: KeyboardEvent) => {
-        if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
-            e.preventDefault();
-            if (activeSong) {
-                setIsPerformanceMode(prev => !prev);
-            }
+    // Set Management
+    const handleNewSet = () => {
+        let count = 1;
+        let newTitle = "Untitled Set";
+        while (sets.some(set => set.title === newTitle)) {
+            newTitle = `Untitled Set ${count++}`;
         }
-    }, [activeSong]);
+        const newSet: Set = {
+            id: `set-${Date.now()}`,
+            title: newTitle,
+            songIds: [],
+        };
+        setSets(prev => [newSet, ...prev]);
+    };
 
-    useEffect(() => {
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [handleKeyDown]);
+    const handleDeleteSet = (id: string) => {
+        setSets(prev => prev.filter(set => set.id !== id));
+        if (activeSetId === id) {
+            setActiveSetId(null);
+        }
+    };
+    
+    const handleAddSongToSet = (songId: string, setId: string) => {
+        setSets(prev => prev.map(set => {
+            if (set.id === setId && !set.songIds.includes(songId)) {
+                return { ...set, songIds: [...set.songIds, songId] };
+            }
+            return set;
+        }));
+    };
+    
+    const handleRemoveSongFromSet = (songId: string, setId: string) => {
+        setSets(prev => prev.map(set => {
+            if (set.id === setId) {
+                return { ...set, songIds: set.songIds.filter(id => id !== songId) };
+            }
+            return set;
+        }));
+    };
+
+    const handleReorderSongsInSet = (setId: string, songId: string, newIndex: number) => {
+        setSets(prev => prev.map(set => {
+            if (set.id === setId) {
+                const newSongIds = [...set.songIds];
+                const oldIndex = newSongIds.indexOf(songId);
+                if (oldIndex > -1) {
+                    const [item] = newSongIds.splice(oldIndex, 1);
+                    newSongIds.splice(newIndex, 0, item);
+                    return { ...set, songIds: newSongIds };
+                }
+            }
+            return set;
+        }));
+    };
+
+
+    const handleTogglePerformanceMode = () => {
+        if (!activeSong) return;
+
+        if (!isPerformanceMode) { // Entering performance mode
+            if (activeSetId) {
+                const set = sets.find(s => s.id === activeSetId);
+                if (set) {
+                    const songIndex = set.songIds.indexOf(activeSong.id);
+                    if (songIndex !== -1) {
+                        setPerformanceContext({ setId: activeSetId, songIndex });
+                    }
+                }
+            }
+            setIsPerformanceMode(true);
+        } else { // Exiting
+            setIsPerformanceMode(false);
+            setPerformanceContext(null);
+        }
+    };
+    
+    const handlePerformanceNavigate = (direction: 'next' | 'prev') => {
+        if (!performanceContext) return;
+        const { setId, songIndex } = performanceContext;
+        const set = sets.find(s => s.id === setId);
+        if (!set) return;
+
+        const newIndex = direction === 'next' ? songIndex + 1 : songIndex - 1;
+        if (newIndex >= 0 && newIndex < set.songIds.length) {
+            setActiveSongId(set.songIds[newIndex]);
+            setPerformanceContext({ setId, songIndex: newIndex });
+        }
+    };
+
+    let performanceProps = {};
+    if (isPerformanceMode && performanceContext) {
+        const set = sets.find(s => s.id === performanceContext.setId);
+        if (set) {
+            performanceProps = {
+                onNext: () => handlePerformanceNavigate('next'),
+                onPrev: () => handlePerformanceNavigate('prev'),
+                isNextAvailable: performanceContext.songIndex < set.songIds.length - 1,
+                isPrevAvailable: performanceContext.songIndex > 0,
+            };
+        }
+    }
     
     return (
         <div className="flex h-screen bg-gray-900 text-white font-sans">
             <SongList
                 songs={songs}
+                sets={sets}
                 activeSongId={activeSongId}
+                activeSetId={activeSetId}
                 onSelectSong={handleSelectSong}
-                onNewSong={handleNewSong}
                 onDeleteSong={handleDeleteSong}
                 onShowWelcome={handleShowWelcome}
-                onOpenSettings={() => setIsSettingsOpen(true)}
+                onNewSet={handleNewSet}
+                onDeleteSet={handleDeleteSet}
+                onUpdateTitle={handleUpdateTitle}
+                onAddSongToSet={handleAddSongToSet}
+                onRemoveSongFromSet={handleRemoveSongFromSet}
+                onReorderSongsInSet={handleReorderSongsInSet}
                 isLoading={isLoading}
                 pendingSongTitle={pendingSongTitle}
             />
@@ -177,8 +278,10 @@ const App: React.FC = () => {
                     song={activeSong}
                     onUpdate={handleUpdateSong}
                     onImportFromFile={handleImportFromFile}
-                    onSearch={handleSearch}
+                    onPasteAndCreateSong={handlePasteAndCreateSong}
+                    onNewSong={handleNewSong}
                     onTranspose={handleTranspose}
+                    onTogglePerformanceMode={handleTogglePerformanceMode}
                     isLoading={isLoading}
                     loadingMessage={loadingMessage}
                     error={error}
@@ -186,26 +289,19 @@ const App: React.FC = () => {
                     chordBookHook={chordBookHook}
                     isCheatsheetVisible={isCheatsheetVisible}
                     setIsCheatsheetVisible={setIsCheatsheetVisible}
-                    preferredSites={preferredSites}
                 />
             </main>
 
             {activeSong && isPerformanceMode && (
                 <PerformanceView
                     song={activeSong}
-                    onExit={() => setIsPerformanceMode(false)}
+                    onExit={handleTogglePerformanceMode}
                     chordBookHook={chordBookHook}
                     isCheatsheetVisible={isCheatsheetVisible}
                     setIsCheatsheetVisible={setIsCheatsheetVisible}
+                    {...performanceProps}
                 />
             )}
-
-            <SettingsModal 
-                isOpen={isSettingsOpen}
-                onClose={() => setIsSettingsOpen(false)}
-                preferredSites={preferredSites}
-                setPreferredSites={setPreferredSites}
-            />
         </div>
     );
 };
